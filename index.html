@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>World Events Map (USGS + NASA EONET)</title>
+  <title>World Events Map (USGS + NASA EONET + Conflicts)</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
@@ -23,7 +23,7 @@
       font-size: 14px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.18);
       border: 1px solid rgba(0,0,0,0.08);
-      width: 320px;
+      width: 360px;
       max-width: calc(100vw - 24px);
     }
 
@@ -65,6 +65,8 @@
     .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
     .dot.eq { background: #2563eb; }
     .dot.ev { background: #dc2626; }
+    .dot.cf { background: #f59e0b; }
+    .dot.pl { background: #10b981; }
 
     .footer {
       position: absolute;
@@ -85,9 +87,10 @@
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       font-size: 12px;
       opacity: 0.9;
-      max-width: 900px;
+      max-width: 980px;
     }
     a { color: inherit; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
   </style>
 </head>
 <body>
@@ -96,12 +99,17 @@
 
     <div class="row">
       <span class="pill"><span class="dot eq"></span> USGS Earthquakes</span>
-      <span class="pill"><span class="dot ev"></span> NASA EONET events</span>
+      <span class="pill"><span class="dot ev"></span> NASA EONET</span>
+      <span class="pill"><span class="dot cf"></span> Conflicts (GDELT)</span>
     </div>
 
     <div class="row">
       <label><input id="showEq" type="checkbox" checked /> Zemětřesení</label>
       <label><input id="showEonet" type="checkbox" checked /> Přírodní události</label>
+      <label><input id="showConflicts" type="checkbox" checked /> Války / útoky</label>
+      <label title="Zkouška bez backendu. Často narazí na CORS / limity.">
+        <input id="showPlanes" type="checkbox" /> Letadla (beta)
+      </label>
     </div>
 
     <div class="row">
@@ -119,7 +127,13 @@
 
     <div class="row">
       <div class="muted">
-        Pozn.: EONET vrací „otevřené“ události (požáry, bouře, vulkány…), zemětřesení je z USGS feedu.
+        Tip: Přepínač mapy (OSM ↔ Satellite) najdeš vpravo nahoře v mapě.
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="muted">
+        Pozn.: „Války/útoky“ je vrstva z mediálních zpráv (GDELT). Může obsahovat šum a někdy nepřesnou lokaci.
       </div>
     </div>
   </div>
@@ -128,42 +142,91 @@
 
   <div class="footer">
     <div class="note">
-      Data zdroje: USGS Earthquake Hazards Program & NASA EONET. Mapa: OpenStreetMap + Leaflet.
+      Data: USGS (zemětřesení), NASA EONET (katastrofy), GDELT (konfliktní zprávy). Basemap: OpenStreetMap + Leaflet. Satellite: veřejná dlaždicová služba (může mít licenční omezení). Letadla: OpenSky (beta, bez backendu často neprojde kvůli CORS).
     </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
-    const map = L.map('map', { worldCopyJump: true }).setView([20, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    // --- Basemaps
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    });
 
+    // "Satellite" tiles (often works without key, but terms may apply)
+    const esriSat = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        attribution: 'Tiles &copy; Esri'
+      }
+    );
+
+    // --- Map init
+    const map = L.map('map', { worldCopyJump: true, layers: [osm] }).setView([20, 0], 2);
+
+    // Layers (overlays)
     const eqLayer = L.layerGroup().addTo(map);
     const eonetLayer = L.layerGroup().addTo(map);
+    const conflictsLayer = L.layerGroup().addTo(map);
+    const planesLayer = L.layerGroup(); // add/remove dynamically
 
+    // Leaflet UI control (top-right)
+    const baseLayers = { "OSM": osm, "Satellite": esriSat };
+    const overlays = {
+      "Earthquakes (USGS)": eqLayer,
+      "Natural events (EONET)": eonetLayer,
+      "Conflicts (GDELT)": conflictsLayer,
+      "Planes (OpenSky beta)": planesLayer
+    };
+    L.control.layers(baseLayers, overlays, { collapsed: true }).addTo(map);
+
+    // UI
     const showEq = document.getElementById('showEq');
     const showEonet = document.getElementById('showEonet');
+    const showConflicts = document.getElementById('showConflicts');
+    const showPlanes = document.getElementById('showPlanes');
     const sinceEl = document.getElementById('since');
     const refreshBtn = document.getElementById('refresh');
     const statusEl = document.getElementById('status');
 
     function setStatus(msg) { statusEl.textContent = msg; }
 
-    showEq.addEventListener('change', () => {
-      if (showEq.checked) map.addLayer(eqLayer);
-      else map.removeLayer(eqLayer);
+    function toggleLayer(checkbox, layer) {
+      if (checkbox.checked) map.addLayer(layer);
+      else map.removeLayer(layer);
+    }
+
+    showEq.addEventListener('change', () => toggleLayer(showEq, eqLayer));
+    showEonet.addEventListener('change', () => toggleLayer(showEonet, eonetLayer));
+    showConflicts.addEventListener('change', () => toggleLayer(showConflicts, conflictsLayer));
+
+    showPlanes.addEventListener('change', () => {
+      if (showPlanes.checked) {
+        map.addLayer(planesLayer);
+        loadPlanesOnce(); // try once on toggle
+      } else {
+        map.removeLayer(planesLayer);
+        planesLayer.clearLayers();
+      }
     });
 
-    showEonet.addEventListener('change', () => {
-      if (showEonet.checked) map.addLayer(eonetLayer);
-      else map.removeLayer(eonetLayer);
-    });
-
+    // Helpers
     function isoNowMinus(since) {
       const ms = (since === '7d') ? 7*24*60*60*1000 : 24*60*60*1000;
       return new Date(Date.now() - ms).toISOString();
+    }
+
+    function toGDELTDateTime(date) {
+      // GDELT wants YYYYMMDDHHMMSS (UTC)
+      const pad = (n) => String(n).padStart(2, '0');
+      const y = date.getUTCFullYear();
+      const m = pad(date.getUTCMonth() + 1);
+      const d = pad(date.getUTCDate());
+      const hh = pad(date.getUTCHours());
+      const mm = pad(date.getUTCMinutes());
+      const ss = pad(date.getUTCSeconds());
+      return `${y}${m}${d}${hh}${mm}${ss}`;
     }
 
     function escapeHtml(str) {
@@ -175,6 +238,7 @@
         .replaceAll("'", '&#39;');
     }
 
+    // --- USGS earthquakes
     async function loadEarthquakes(since) {
       eqLayer.clearLayers();
 
@@ -182,7 +246,7 @@
       const url = 'https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson'
         + '&starttime=' + encodeURIComponent(starttime)
         + '&orderby=time'
-        + '&limit=400';
+        + '&limit=500';
 
       const res = await fetch(url);
       if (!res.ok) throw new Error('USGS fetch failed: ' + res.status);
@@ -213,7 +277,7 @@
         });
 
         const popup = `
-          <div style="max-width:320px">
+          <div style="max-width:340px">
             <div style="font-weight:700;margin-bottom:6px">${escapeHtml(title)}</div>
             <div style="font-size:12px;opacity:.8;margin-bottom:6px">🕒 ${escapeHtml(time)} • Magnitude: ${escapeHtml(mag)}</div>
             ${place ? `<div style="font-size:12px;margin-bottom:6px">📍 ${escapeHtml(place)}</div>` : ''}
@@ -227,10 +291,11 @@
       return feats.length;
     }
 
+    // --- NASA EONET
     async function loadEONET(since) {
       eonetLayer.clearLayers();
 
-      const url = 'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=300';
+      const url = 'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=400';
       const res = await fetch(url);
       if (!res.ok) throw new Error('EONET fetch failed: ' + res.status);
 
@@ -284,7 +349,7 @@
         });
 
         const popup = `
-          <div style="max-width:320px">
+          <div style="max-width:340px">
             <div style="font-weight:700;margin-bottom:6px">${escapeHtml(title)}</div>
             <div style="font-size:12px;opacity:.8;margin-bottom:6px">🕒 ${escapeHtml(time)} ${cat ? ' • ' + escapeHtml(cat) : ''}</div>
             <div style="font-size:12px;opacity:.8;margin-bottom:6px">Geometrie: ${escapeHtml(geomType)}</div>
@@ -299,17 +364,161 @@
       return count;
     }
 
+    // --- Conflicts (GDELT) - news-based, geolocated articles
+    async function loadConflicts(since) {
+      conflictsLayer.clearLayers();
+
+      const end = new Date();
+      const start = new Date(Date.now() - ((since === '7d') ? 7 : 1) * 24*60*60*1000);
+
+      const startDT = toGDELTDateTime(start);
+      const endDT = toGDELTDateTime(end);
+
+      // Query tuned for "war/attacks/bombing" keywords. You can extend it.
+      const q = [
+        '(bombing OR bombardment OR airstrike OR "air strike" OR missile OR shelling OR artillery OR "drone strike" OR strike)',
+        'AND',
+        '(killed OR wounded OR explosion OR "hit" OR "targets" OR "attacked" OR "attack")'
+      ].join(' ');
+
+      // GDELT 2 DOC API:
+      // - mode=ArtList gives articles
+      // - format=json returns JSON
+      // - startdatetime/enddatetime filter time
+      // - maxrecords controls volume
+      // - sort=hybridrel tries to balance relevance/recency
+      const url = 'https://api.gdeltproject.org/api/v2/doc/doc'
+        + '?query=' + encodeURIComponent(q)
+        + '&mode=ArtList'
+        + '&format=json'
+        + '&startdatetime=' + encodeURIComponent(startDT)
+        + '&enddatetime=' + encodeURIComponent(endDT)
+        + '&maxrecords=250'
+        + '&sort=hybridrel';
+
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('GDELT fetch failed: ' + res.status);
+
+      const data = await res.json();
+      const articles = Array.isArray(data.articles) ? data.articles : [];
+
+      let count = 0;
+
+      for (const a of articles) {
+        // GDELT sometimes includes a geocoded "location" with lat/lon.
+        const loc = a.location;
+        const lat = Number(loc?.lat);
+        const lon = Number(loc?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+        const title = a.title || 'Conflict-related news';
+        const source = a.sourceCountry || a.domain || a.sourceCollectionIdentifier || '';
+        const when = a.seendate ? new Date(a.seendate).toLocaleString() : (a.datetime ? new Date(a.datetime).toLocaleString() : '');
+        const urlA = a.url || '';
+        const locName = loc?.name || a.location?.full_name || '';
+
+        const marker = L.circleMarker([lat, lon], {
+          radius: 6,
+          color: '#f59e0b',
+          weight: 2,
+          fillColor: '#f59e0b',
+          fillOpacity: 0.22
+        });
+
+        const popup = `
+          <div style="max-width:360px">
+            <div style="font-weight:700;margin-bottom:6px">${escapeHtml(title)}</div>
+            <div style="font-size:12px;opacity:.8;margin-bottom:6px">🕒 ${escapeHtml(when)} ${source ? ' • ' + escapeHtml(source) : ''}</div>
+            ${locName ? `<div style="font-size:12px;margin-bottom:6px">📍 ${escapeHtml(locName)}</div>` : ''}
+            ${urlA ? `<a href="${escapeHtml(urlA)}" target="_blank" rel="noreferrer">Otevřít článek</a>` : ''}
+            <div style="font-size:11px;opacity:.65;margin-top:8px">
+              Tip: Když je událostí málo, uprav dotaz v kódu (<code>loadConflicts()</code>).
+            </div>
+          </div>
+        `;
+        marker.bindPopup(popup);
+        marker.addTo(conflictsLayer);
+        count++;
+      }
+
+      return count;
+    }
+
+    // --- Planes (OpenSky) - often blocked by CORS/rate limits without backend
+    let planesLoadedAt = 0;
+    async function loadPlanesOnce() {
+      const now = Date.now();
+      if (now - planesLoadedAt < 60_000) return; // avoid spamming
+      planesLoadedAt = now;
+
+      planesLayer.clearLayers();
+      setStatus('Zkouším načíst letadla (OpenSky)…');
+
+      try {
+        const res = await fetch('https://opensky-network.org/api/states/all');
+        if (!res.ok) throw new Error('OpenSky HTTP ' + res.status);
+        const data = await res.json();
+
+        const states = Array.isArray(data.states) ? data.states : [];
+        let count = 0;
+
+        // states format: https://openskynetwork.github.io/opensky-api/rest.html#response
+        for (const s of states) {
+          const callsign = (s[1] || '').trim();
+          const lon = Number(s[5]);
+          const lat = Number(s[6]);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+          const origin = s[2] || '';
+          const alt = s[7];
+          const vel = s[9];
+
+          const marker = L.circleMarker([lat, lon], {
+            radius: 3,
+            color: '#10b981',
+            weight: 1,
+            fillColor: '#10b981',
+            fillOpacity: 0.5
+          });
+
+          marker.bindPopup(`
+            <div style="max-width:320px">
+              <div style="font-weight:700;margin-bottom:6px">✈️ ${escapeHtml(callsign || 'Plane')}</div>
+              <div style="font-size:12px;opacity:.8">Origin: ${escapeHtml(origin || 'n/a')}</div>
+              <div style="font-size:12px;opacity:.8">Altitude: ${escapeHtml(alt ?? 'n/a')} m</div>
+              <div style="font-size:12px;opacity:.8">Velocity: ${escapeHtml(vel ?? 'n/a')} m/s</div>
+            </div>
+          `);
+          marker.addTo(planesLayer);
+          count++;
+          if (count >= 1500) break; // keep the browser alive
+        }
+
+        setStatus(`Letadla načtena: ${count} (beta).`);
+      } catch (e) {
+        console.error(e);
+        setStatus('Letadla se nepodařilo načíst (pravděpodobně CORS/limity). Bez backendu to bývá běžné.');
+        showPlanes.checked = false;
+        map.removeLayer(planesLayer);
+      }
+    }
+
     async function loadAll() {
       refreshBtn.disabled = true;
       const since = sinceEl.value;
 
       try {
         setStatus('Načítám data…');
-        const [eqCount, evCount] = await Promise.all([
+        const [eqCount, evCount, cfCount] = await Promise.all([
           loadEarthquakes(since),
-          loadEONET(since)
+          loadEONET(since),
+          loadConflicts(since),
         ]);
-        setStatus(`Hotovo. Zemětřesení: ${eqCount}, EONET události: ${evCount}.`);
+
+        setStatus(`Hotovo. Zemětřesení: ${eqCount}, EONET: ${evCount}, Konflikty: ${cfCount}.`);
+
+        // If planes layer is enabled, try loading
+        if (showPlanes.checked) loadPlanesOnce();
       } catch (e) {
         console.error(e);
         setStatus('Chyba: ' + (e?.message || 'unknown'));
@@ -321,6 +530,7 @@
     refreshBtn.addEventListener('click', loadAll);
     sinceEl.addEventListener('change', loadAll);
 
+    // Initial load
     loadAll();
   </script>
 </body>
