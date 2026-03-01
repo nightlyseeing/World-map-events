@@ -1,0 +1,8 @@
+html, body {
+  height: 100%;
+  margin: 0;
+}
+* { box-sizing: border-box; }
+.page { height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+.mapWrap { height: 100%; }
+.leaflet-container { height: 100%; width: 100%; }
