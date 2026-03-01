@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>World Events Map (USGS + NASA EONET)</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #map { height: 100%; width: 100%; }
+
+    .panel {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 1000;
+      background: white;
+      padding: 12px 12px;
+      border-radius: 12px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-size: 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+      border: 1px solid rgba(0,0,0,0.08);
+      width: 320px;
+      max-width: calc(100vw - 24px);
+    }
+
+    .panel h1 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .row + .row { margin-top: 10px; }
+
+    label { display: flex; gap: 8px; align-items: center; }
+    input[type="checkbox"] { transform: translateY(1px); }
+
+    select, button {
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(0,0,0,0.18);
+      background: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .muted { opacity: 0.75; font-size: 12px; line-height: 1.35; }
+    .status { font-size: 12px; opacity: 0.85; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.12);
+      font-size: 12px;
+      opacity: 0.9;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+    .dot.eq { background: #2563eb; }
+    .dot.ev { background: #dc2626; }
+
+    .footer {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      right: 10px;
+      z-index: 800;
+      display: flex;
+      justify-content: center;
+      pointer-events: none;
+    }
+    .footer .note {
+      pointer-events: auto;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 12px;
+      padding: 8px 10px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-size: 12px;
+      opacity: 0.9;
+      max-width: 900px;
+    }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>🌍 World Events Map</h1>
+
+    <div class="row">
+      <span class="pill"><span class="dot eq"></span> USGS Earthquakes</span>
+      <span class="pill"><span class="dot ev"></span> NASA EONET events</span>
+    </div>
+
+    <div class="row">
+      <label><input id="showEq" type="checkbox" checked /> Zemětřesení</label>
+      <label><input id="showEonet" type="checkbox" checked /> Přírodní události</label>
+    </div>
+
+    <div class="row">
+      <label class="muted" for="since">Časové okno</label>
+      <select id="since">
+        <option value="24h" selected>posledních 24 hodin</option>
+        <option value="7d">posledních 7 dní</option>
+      </select>
+      <button id="refresh">Refresh</button>
+    </div>
+
+    <div class="row">
+      <div id="status" class="status">Připraveno.</div>
+    </div>
+
+    <div class="row">
+      <div class="muted">
+        Pozn.: EONET vrací „otevřené“ události (požáry, bouře, vulkány…), zemětřesení je z USGS feedu.
+      </div>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <div class="footer">
+    <div class="note">
+      Data zdroje: USGS Earthquake Hazards Program & NASA EONET. Mapa: OpenStreetMap + Leaflet.
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    const map = L.map('map', { worldCopyJump: true }).setView([20, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const eqLayer = L.layerGroup().addTo(map);
+    const eonetLayer = L.layerGroup().addTo(map);
+
+    const showEq = document.getElementById('showEq');
+    const showEonet = document.getElementById('showEonet');
+    const sinceEl = document.getElementById('since');
+    const refreshBtn = document.getElementById('refresh');
+    const statusEl = document.getElementById('status');
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    showEq.addEventListener('change', () => {
+      if (showEq.checked) map.addLayer(eqLayer);
+      else map.removeLayer(eqLayer);
+    });
+
+    showEonet.addEventListener('change', () => {
+      if (showEonet.checked) map.addLayer(eonetLayer);
+      else map.removeLayer(eonetLayer);
+    });
+
+    function isoNowMinus(since) {
+      const ms = (since === '7d') ? 7*24*60*60*1000 : 24*60*60*1000;
+      return new Date(Date.now() - ms).toISOString();
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    async function loadEarthquakes(since) {
+      eqLayer.clearLayers();
+
+      const starttime = isoNowMinus(since);
+      const url = 'https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson'
+        + '&starttime=' + encodeURIComponent(starttime)
+        + '&orderby=time'
+        + '&limit=400';
+
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('USGS fetch failed: ' + res.status);
+
+      const data = await res.json();
+      const feats = Array.isArray(data.features) ? data.features : [];
+
+      for (const f of feats) {
+        const coords = f?.geometry?.coordinates;
+        if (!Array.isArray(coords) || coords.length < 2) continue;
+        const lon = Number(coords[0]);
+        const lat = Number(coords[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+        const props = f?.properties || {};
+        const title = props.title || 'Earthquake';
+        const place = props.place || '';
+        const mag = (props.mag ?? 'n/a');
+        const time = props.time ? new Date(props.time).toLocaleString() : '';
+        const link = props.url || '';
+
+        const marker = L.circleMarker([lat, lon], {
+          radius: 6,
+          color: '#2563eb',
+          weight: 2,
+          fillColor: '#2563eb',
+          fillOpacity: 0.25
+        });
+
+        const popup = `
+          <div style="max-width:320px">
+            <div style="font-weight:700;margin-bottom:6px">${escapeHtml(title)}</div>
+            <div style="font-size:12px;opacity:.8;margin-bottom:6px">🕒 ${escapeHtml(time)} • Magnitude: ${escapeHtml(mag)}</div>
+            ${place ? `<div style="font-size:12px;margin-bottom:6px">📍 ${escapeHtml(place)}</div>` : ''}
+            ${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noreferrer">Otevřít detail (USGS)</a>` : ''}
+          </div>
+        `;
+        marker.bindPopup(popup);
+        marker.addTo(eqLayer);
+      }
+
+      return feats.length;
+    }
+
+    async function loadEONET(since) {
+      eonetLayer.clearLayers();
+
+      const url = 'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=300';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('EONET fetch failed: ' + res.status);
+
+      const data = await res.json();
+      const events = Array.isArray(data.events) ? data.events : [];
+      const minTime = new Date(isoNowMinus(since)).getTime();
+
+      let count = 0;
+
+      for (const ev of events) {
+        const geoms = Array.isArray(ev.geometry) ? ev.geometry : [];
+        if (geoms.length === 0) continue;
+
+        const newest = geoms[geoms.length - 1];
+        const dateStr = newest?.date ? String(newest.date) : null;
+        const t = dateStr ? new Date(dateStr).getTime() : NaN;
+        if (!Number.isFinite(t) || t < minTime) continue;
+
+        const geomType = newest?.type ? String(newest.type) : 'Point';
+        const coords = newest?.coordinates;
+
+        let lat = null, lon = null;
+
+        if (geomType === 'Point' && Array.isArray(coords) && coords.length >= 2) {
+          lon = Number(coords[0]);
+          lat = Number(coords[1]);
+        } else if (geomType === 'Polygon' && Array.isArray(coords) && Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
+          const ring = coords[0];
+          const xs = ring.map(p => Number(p[0])).filter(Number.isFinite);
+          const ys = ring.map(p => Number(p[1])).filter(Number.isFinite);
+          if (xs.length && ys.length) {
+            lon = xs.reduce((a,b)=>a+b,0) / xs.length;
+            lat = ys.reduce((a,b)=>a+b,0) / ys.length;
+          }
+        }
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+        const title = ev.title || 'Natural event';
+        const categories = Array.isArray(ev.categories) ? ev.categories : [];
+        const cat = categories[0]?.title ? String(categories[0].title) : '';
+        const time = dateStr ? new Date(dateStr).toLocaleString() : '';
+        const link = (Array.isArray(ev.sources) && ev.sources[0]?.url) ? String(ev.sources[0].url) : '';
+
+        const marker = L.circleMarker([lat, lon], {
+          radius: 6,
+          color: '#dc2626',
+          weight: 2,
+          fillColor: '#dc2626',
+          fillOpacity: 0.22
+        });
+
+        const popup = `
+          <div style="max-width:320px">
+            <div style="font-weight:700;margin-bottom:6px">${escapeHtml(title)}</div>
+            <div style="font-size:12px;opacity:.8;margin-bottom:6px">🕒 ${escapeHtml(time)} ${cat ? ' • ' + escapeHtml(cat) : ''}</div>
+            <div style="font-size:12px;opacity:.8;margin-bottom:6px">Geometrie: ${escapeHtml(geomType)}</div>
+            ${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noreferrer">Otevřít zdroj</a>` : ''}
+          </div>
+        `;
+        marker.bindPopup(popup);
+        marker.addTo(eonetLayer);
+        count++;
+      }
+
+      return count;
+    }
+
+    async function loadAll() {
+      refreshBtn.disabled = true;
+      const since = sinceEl.value;
+
+      try {
+        setStatus('Načítám data…');
+        const [eqCount, evCount] = await Promise.all([
+          loadEarthquakes(since),
+          loadEONET(since)
+        ]);
+        setStatus(`Hotovo. Zemětřesení: ${eqCount}, EONET události: ${evCount}.`);
+      } catch (e) {
+        console.error(e);
+        setStatus('Chyba: ' + (e?.message || 'unknown'));
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    refreshBtn.addEventListener('click', loadAll);
+    sinceEl.addEventListener('change', loadAll);
+
+    loadAll();
+  </script>
+</body>
+</html>
